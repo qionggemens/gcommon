@@ -17,6 +17,8 @@ package logsink
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -214,11 +216,8 @@ func textPrintf(m *Meta, textSinks []Text, format string, args ...any) (n int, e
 	nDigits(buf, 7, uint64(m.Thread), ' ')
 	buf.WriteString(" | ")
 	{
-		file := m.File
-		if i := strings.LastIndex(file, "/"); i >= 0 {
-			file = file[i+1:]
-		}
-		buf.WriteString(file)
+		// 输出带路径的源码位置，便于定位（不再只打 basename）
+		buf.WriteString(formatSourceFile(m.File))
 	}
 
 	buf.WriteByte(':')
@@ -260,6 +259,52 @@ func textPrintf(m *Meta, textSinks []Text, format string, args ...any) (n int, e
 }
 
 const digits = "0123456789"
+
+var (
+	cwdOnce sync.Once
+	cwdPath string
+)
+
+// formatSourceFile 将 runtime.Caller 的绝对路径压成可读的带目录路径：
+//  1. 若在当前工作目录下 → 相对路径，如 internal/common/manager/bean.go
+//  2. 若在 module cache（…/pkg/mod/…@v…/…）→ 模块内相对路径
+//  3. 否则保留末尾至多 4 段路径，避免整段绝对路径过长
+func formatSourceFile(file string) string {
+	if file == "" || file == "???" {
+		return file
+	}
+	file = filepath.ToSlash(file)
+
+	cwdOnce.Do(func() {
+		if wd, err := os.Getwd(); err == nil {
+			cwdPath = filepath.ToSlash(wd)
+		}
+	})
+	if cwdPath != "" {
+		prefix := cwdPath + "/"
+		if strings.HasPrefix(file, prefix) {
+			return file[len(prefix):]
+		}
+	}
+
+	// e.g. /Users/.../go/pkg/mod/github.com/foo@v1.2.3/pkg/bar/baz.go
+	if i := strings.Index(file, "/pkg/mod/"); i >= 0 {
+		rest := file[i+len("/pkg/mod/"):]
+		if at := strings.Index(rest, "@"); at >= 0 {
+			if slash := strings.Index(rest[at:], "/"); slash >= 0 {
+				return rest[at+slash+1:]
+			}
+		}
+		return rest
+	}
+
+	parts := strings.Split(file, "/")
+	const maxSeg = 4
+	if len(parts) > maxSeg {
+		parts = parts[len(parts)-maxSeg:]
+	}
+	return strings.Join(parts, "/")
+}
 
 // twoDigits formats a zero-prefixed two-digit integer to buf.
 func twoDigits(buf *bytes.Buffer, d int) {
