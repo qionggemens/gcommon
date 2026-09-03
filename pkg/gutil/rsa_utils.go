@@ -6,91 +6,63 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+
 	"github.com/qionggemens/gcommon/pkg/glog"
 )
 
-// RSAEncrypt
-//
-//	@Description: RSA加密
-//	@param plainTextBytes
-//	@param publicKeyBytes
-//	@return []byte
-func RSAEncrypt(plainTextBytes []byte, publicKeyBytes []byte) []byte {
-	//pem解码
+// RSAEncrypt RSA 加密；失败返回 error（不再 panic）
+func RSAEncrypt(plainTextBytes []byte, publicKeyBytes []byte) ([]byte, error) {
 	block, _ := pem.Decode(publicKeyBytes)
-	//x509解码
+	if block == nil {
+		return nil, errors.New("rsa encrypt: invalid public key pem")
+	}
 	publicKeyInterface, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	//类型断言
-	publicKey := publicKeyInterface.(*rsa.PublicKey)
-	//对明文进行加密
-	cipherTextBytes, err := rsa.EncryptPKCS1v15(rand.Reader, publicKey, plainTextBytes)
-	if err != nil {
-		panic(err)
+	publicKey, ok := publicKeyInterface.(*rsa.PublicKey)
+	if !ok {
+		return nil, errors.New("rsa encrypt: not rsa public key")
 	}
-	//返回密文
-	return cipherTextBytes
+	return rsa.EncryptPKCS1v15(rand.Reader, publicKey, plainTextBytes)
 }
 
-// RSADecrypt
-//
-//	@Description: RSA解密
-//	@param cipherTextBytes
-//	@param privateKeyBytes
-//	@return []byte
-func RSADecrypt(cipherTextBytes []byte, privateKeyBytes []byte) []byte {
-	//pem解码
+// RSADecrypt RSA 解密；失败返回 error（不再 panic / 忽略错误）
+func RSADecrypt(cipherTextBytes []byte, privateKeyBytes []byte) ([]byte, error) {
 	block, _ := pem.Decode(privateKeyBytes)
-	//X509解码
+	if block == nil {
+		return nil, errors.New("rsa decrypt: invalid private key pem")
+	}
 	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	//对密文进行解密
-	plainTextBytes, _ := rsa.DecryptPKCS1v15(rand.Reader, privateKey, cipherTextBytes)
-	//返回明文
-	return plainTextBytes
+	return rsa.DecryptPKCS1v15(rand.Reader, privateKey, cipherTextBytes)
 }
 
-// RSAGenerate
-//
-//	@Description: 密钥生成
-//	@param bits
-//	@return []byte
-//	@return []byte
-//	@return error
+// RSAGenerate 密钥生成
 func RSAGenerate(bits int) ([]byte, []byte, error) {
-	//GenerateKey函数使用随机数据生成器random生成一对具有指定字位数的RSA密钥
-	//Reader是一个全局、共享的密码用强随机数生成器
 	privateKey, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {
 		glog.Errorf("RSAGenerate fail - msg:%s", err.Error())
 		return nil, nil, errors.New("rsa generate fail")
 	}
-	//通过x509标准将得到的ras私钥序列化为ASN.1 的 DER编码字符串
 	X509PrivateKey := x509.MarshalPKCS1PrivateKey(privateKey)
-	//构建一个pem.Block结构体对象
 	privateBlock := pem.Block{Type: "RSA Private Key", Bytes: X509PrivateKey}
 	prk := pem.EncodeToMemory(&privateBlock)
 	if prk == nil {
 		glog.Errorf("RSAGenerate fail - msg:generate private key fail")
 		return nil, nil, errors.New("generate private key fail")
 	}
-	//获取公钥的数据
 	publicKey := privateKey.PublicKey
-	//X509对公钥编码
 	X509PublicKey, err := x509.MarshalPKIXPublicKey(&publicKey)
 	if err != nil {
 		glog.Errorf("RSAGenerate fail - msg:%s", err.Error())
 		return nil, nil, errors.New("rsa generate fail")
 	}
-	//创建一个pem.Block结构体对象
 	publicBlock := pem.Block{Type: "RSA Public Key", Bytes: X509PublicKey}
-	//保存到文件
 	puk := pem.EncodeToMemory(&publicBlock)
-	if prk == nil {
+	if puk == nil {
 		glog.Errorf("RSAGenerate fail - msg:generate public key fail")
 		return nil, nil, errors.New("generate public key fail")
 	}

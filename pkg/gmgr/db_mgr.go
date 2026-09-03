@@ -41,12 +41,14 @@ func NewDB(dbName string) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	sqlDB, _ := db.DB()
-	// SetMaxIdleConns 用于设置连接池中空闲连接的最大数量。
-	sqlDB.SetMaxIdleConns(maxOpenConns)
-	// SetMaxOpenConns 设置打开数据库连接的最大数量。
-	sqlDB.SetMaxOpenConns(minIdleConns)
-	// SetConnMaxLifetime 设置了连接可复用的最大时间。
+	sqlDB, err := db.DB()
+	if err != nil {
+		glog.Errorf("InitDB fail - get sql.DB: %v", err)
+		return nil, err
+	}
+	// SetMaxIdleConns 空闲连接上限；SetMaxOpenConns 打开连接上限（原先两者参数写反）
+	sqlDB.SetMaxIdleConns(minIdleConns)
+	sqlDB.SetMaxOpenConns(maxOpenConns)
 	sqlDB.SetConnMaxLifetime(time.Duration(maxLifeTime) * time.Second)
 	glog.Infoln("InitDB db success")
 	return db, nil

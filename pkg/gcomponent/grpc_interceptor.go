@@ -9,14 +9,17 @@ package gcomponent
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
+	"strconv"
+	"time"
+
 	"github.com/qionggemens/gcommon/pkg/gentity"
 	"github.com/qionggemens/gcommon/pkg/glog"
 	util "github.com/qionggemens/gcommon/pkg/gutil"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"runtime/debug"
-	"strconv"
-	"time"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -32,14 +35,13 @@ func getBodyStr(body interface{}) string {
 }
 
 func getMdOfClient(ctx context.Context) (context.Context, metadata.MD) {
-	// 拿上游的ctx traceId
 	md, exists := metadata.FromIncomingContext(ctx)
 	var traceId string
 	if !exists {
 		traceId = strconv.FormatInt(time.Now().UnixMicro(), 10)[4:]
 	} else {
 		arr := md.Get(gentity.MdKeyTraceId)
-		if arr == nil || len(arr) == 0 {
+		if len(arr) == 0 {
 			traceId = strconv.FormatInt(time.Now().UnixMicro(), 10)[4:]
 		} else {
 			traceId = arr[0]
@@ -51,81 +53,68 @@ func getMdOfClient(ctx context.Context) (context.Context, metadata.MD) {
 		outMd = metadata.Pairs(gentity.MdKeyTraceId, traceId)
 		return metadata.NewOutgoingContext(ctx, outMd), outMd
 	}
-	outMd.Append(gentity.MdKeyTraceId, traceId)
-	return metadata.AppendToOutgoingContext(ctx, gentity.MdKeyTraceId, traceId), outMd
+	copied := outMd.Copy()
+	copied.Set(gentity.MdKeyTraceId, traceId)
+	return metadata.NewOutgoingContext(ctx, copied), copied
 }
 
 func getMdOfServer(ctx context.Context) metadata.MD {
-	// 拿上游的ctx
 	md, exists := metadata.FromIncomingContext(ctx)
 	if !exists {
 		return metadata.MD{}
 	}
-	arr := md.Get(gentity.MdKeyTraceId)
-	if arr == nil || len(arr) == 0 {
-		md.Append(gentity.MdKeyTraceId, "")
+	copied := md.Copy()
+	if len(copied.Get(gentity.MdKeyTraceId)) == 0 {
+		copied.Set(gentity.MdKeyTraceId, "")
 	}
-	return md
+	return copied
 }
 
-// GrpcServerInterceptor
-//
-//	@Description: 服务端拦截器
-//	@param ctx
-//	@param req
-//	@param info
-//	@param handler
-//	@return interface{}
-//	@return error
-func GrpcServerInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+// GrpcServerInterceptor 服务端拦截器
+func GrpcServerInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (rsp interface{}, err error) {
 	reqStr := getBodyStr(req)
 	clientAddr := util.GetGrpcClientAddr(ctx)
 	md := getMdOfServer(ctx)
 	defer func() {
 		if p := recover(); p != nil {
 			glog.Errorf("[GRPC SERVER] %s fail [From:%s] - md:%+v, req:%s, err:%v, stack:%s", info.FullMethod, clientAddr, md, reqStr, p, string(debug.Stack()))
+			rsp = nil
+			err = status.Errorf(codes.Internal, "panic: %v", p)
 		}
 	}()
 	glog.Infof("[GRPC SERVER] %s begin [From:%s] - md:%+v, req:%s", info.FullMethod, clientAddr, md, reqStr)
 	bt := time.Now()
-	rsp, err := handler(ctx, req)
+	rsp, err = handler(ctx, req)
+	cost := time.Since(bt).Milliseconds()
 	if err != nil {
-		glog.Errorf("[GRPC SERVER] %s fail [From:%s] - cost:%dms, md:%+v, req:%s, msg:%s", info.FullMethod, clientAddr, md, time.Since(bt).Milliseconds(), reqStr, err.Error())
+		glog.Errorf("[GRPC SERVER] %s fail [From:%s] - cost:%dms, md:%+v, req:%s, msg:%s", info.FullMethod, clientAddr, cost, md, reqStr, err.Error())
 	} else {
 		rspStr := getBodyStr(rsp)
-		glog.Infof("[GRPC SERVER] %s success [From:%s] - cost:%dms, md:%+v, req:%s, rsp:%s", info.FullMethod, clientAddr, md, time.Since(bt).Milliseconds(), reqStr, rspStr)
+		glog.Infof("[GRPC SERVER] %s success [From:%s] - cost:%dms, md:%+v, req:%s, rsp:%s", info.FullMethod, clientAddr, cost, md, reqStr, rspStr)
 	}
 	return rsp, err
 }
 
-// GrpcClientInterceptor
-//
-//	@Description: 客户端拦截器
-//	@param ctx
-//	@param method
-//	@param req
-//	@param reply
-//	@param cc
-//	@param invoker
-//	@param opts
-//	@return error
-func GrpcClientInterceptor(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+// GrpcClientInterceptor 客户端拦截器
+func GrpcClientInterceptor(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) (err error) {
 	reqStr := getBodyStr(req)
 	serverAddr := util.GetGrpcClientAddr(ctx)
 	outCtx, md := getMdOfClient(ctx)
 	defer func() {
 		if p := recover(); p != nil {
 			glog.Errorf("[GRPC CLIENT] %s fail [To:%s] - md:%+v, req:%s, err:%v, stack:%s", method, serverAddr, md, reqStr, p, string(debug.Stack()))
+			err = status.Errorf(codes.Internal, "panic: %v", p)
 		}
 	}()
 	glog.Infof("[GRPC CLIENT] %s begin [To:%s] - md:%+v, req:%s", method, serverAddr, md, reqStr)
 	bt := time.Now()
-	err := invoker(outCtx, method, req, reply, cc, opts...)
+	err = invoker(outCtx, method, req, reply, cc, opts...)
+	cost := time.Since(bt).Milliseconds()
 	if err != nil {
-		glog.Errorf("[GRPC CLIENT] %s fail [To:%s] - cost:%dms, md:%+v, req:%s, msg:%s", method, serverAddr, md, time.Since(bt).Milliseconds(), reqStr, err.Error())
+		glog.Errorf("[GRPC CLIENT] %s fail [To:%s] - cost:%dms, md:%+v, req:%s, msg:%s", method, serverAddr, cost, md, reqStr, err.Error())
 	} else {
 		rspStr := getBodyStr(reply)
-		glog.Infof("[GRPC CLIENT] %s success [To:%s] - cost:%dms, md:%+v, req:%s, rsp:%s", method, serverAddr, md, time.Since(bt).Milliseconds(), reqStr, rspStr)
+		glog.Infof("[GRPC CLIENT] %s success [To:%s] - cost:%dms, md:%+v, req:%s, rsp:%s", method, serverAddr, cost, md, reqStr, rspStr)
 	}
 	return err
 }

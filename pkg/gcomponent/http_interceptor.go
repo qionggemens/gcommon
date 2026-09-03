@@ -7,10 +7,11 @@
 package gcomponent
 
 import (
-	"github.com/qionggemens/gcommon/pkg/glog"
 	"net/http"
 	"runtime/debug"
 	"time"
+
+	"github.com/qionggemens/gcommon/pkg/glog"
 )
 
 // HttpServer http
@@ -30,6 +31,8 @@ func (server *HttpServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	defer func() {
 		if e := recover(); e != nil {
 			glog.Errorf("[HTTP ACCESS] handle fail - path:%s, err:%v, stack:%s", urlPath, e, string(debug.Stack()))
+			// 尽量返回 500；若业务已写过 Header 可能无效，但不把 panic 伪装成成功
+			rw.WriteHeader(http.StatusInternalServerError)
 		}
 	}()
 	glog.Infof("[HTTP ACCESS] req begin - path:%s", urlPath)

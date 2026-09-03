@@ -9,13 +9,14 @@ package nacos
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"strconv"
+	"strings"
+
 	"github.com/nacos-group/nacos-sdk-go/v2/clients"
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 	"github.com/qionggemens/gcommon/pkg/glog"
 	"gopkg.in/yaml.v2"
-	"reflect"
-	"strconv"
-	"strings"
 )
 
 var configMap = make(map[string]interface{}, 0)
@@ -60,33 +61,40 @@ func LoadYamlConfig(namespaceId string, dataId string) error {
 	return nil
 }
 
-// buildFlattenedMap
-//
-//	@Description: Spring 原生转换
-//	@param result
-//	@param source
-//	@param path
+// buildFlattenedMap 对齐 Spring 风格扁平化；nil 值安全处理。
 func buildFlattenedMap(result map[string]interface{}, source map[string]interface{}, path string) {
 	for k, v := range source {
-		if len(path) != 0 && path != "" {
+		if path != "" {
 			if strings.HasPrefix(k, "[") {
 				k = path + k
 			} else {
 				k = path + "." + k
 			}
 		}
+		if v == nil {
+			result[k] = ""
+			continue
+		}
 		vn := reflect.TypeOf(v).Kind()
 		if vn == reflect.String {
 			result[k] = v
 		} else if vn == reflect.Map {
-			value := v.(map[interface{}]interface{})
+			value, ok := v.(map[interface{}]interface{})
+			if !ok {
+				result[k] = fmt.Sprint(v)
+				continue
+			}
 			son := make(map[string]interface{}, 0)
 			for mk, mv := range value {
-				son[mk.(string)] = mv
+				son[fmt.Sprint(mk)] = mv
 			}
 			buildFlattenedMap(result, son, k)
 		} else if vn == reflect.Array || vn == reflect.Slice {
-			value := v.([]interface{})
+			value, ok := v.([]interface{})
+			if !ok {
+				result[k] = fmt.Sprint(v)
+				continue
+			}
 			if len(value) == 0 {
 				result[k] = ""
 			} else {
@@ -97,58 +105,45 @@ func buildFlattenedMap(result map[string]interface{}, source map[string]interfac
 				}
 			}
 		} else {
-			if v != nil {
-				result[k] = v
-			} else {
-				result[k] = ""
-			}
+			result[k] = v
 		}
 	}
 }
 
-// GetBool
-//
-//	@Description: 获取bool值
-//	@param key
-//	@return bool
 func GetBool(key string, defValue bool) bool {
 	value, ok := configMap[key]
 	if !ok {
 		return defValue
 	}
-	val, isOk := value.(bool)
-	if isOk {
-		return val
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "yes", "y", "on":
+			return true
+		case "0", "false", "no", "n", "off":
+			return false
+		}
 	}
 	return defValue
 }
 
-// GetString
-//
-//	@Description: 获取字符串值
-//	@param key
-//	@return string
 func GetString(key string, defValue string) string {
 	value, isOk := configMap[key]
 	if !isOk {
 		return defValue
 	}
-	val, isOk := value.(string)
-	if isOk {
+	if val, isOk := value.(string); isOk {
 		return val
 	}
-	return defValue
+	return fmt.Sprint(value)
 }
 
-// GetStrList
-//
-//	@Description: 获取字符串数组
-//	@param key
-//	@return []string
 func GetStrList(key string) []string {
 	result := make([]string, 0)
 	i := int64(0)
-	for true {
+	for {
 		k := fmt.Sprintf("%s[%s]", key, strconv.FormatInt(i, 10))
 		value, isOk := configMap[k]
 		if !isOk {
@@ -165,53 +160,67 @@ func GetStrList(key string) []string {
 	return result
 }
 
-// GetInt
-//
-//	@Description:
-//	@param key
-//	@return int
 func GetInt(key string, defValue int) int {
-	value, isOk := configMap[key]
-	if !isOk {
+	n, ok := toInt64(configMap[key])
+	if !ok {
 		return defValue
 	}
-	val, isOk := value.(int)
-	if isOk {
-		return val
-	}
-	return defValue
+	return int(n)
 }
 
-// GetInt32
-//
-//	@Description:
-//	@param key
-//	@return int32
 func GetInt32(key string, defValue int32) int32 {
-	value, isOk := configMap[key]
-	if !isOk {
+	n, ok := toInt64(configMap[key])
+	if !ok {
 		return defValue
 	}
-	val, isOk := value.(int32)
-	if isOk {
-		return val
-	}
-	return defValue
+	return int32(n)
 }
 
-// GetInt64
-//
-//	@Description:
-//	@param key
-//	@return int64
 func GetInt64(key string, defValue int64) int64 {
-	value, isOk := configMap[key]
-	if !isOk {
+	n, ok := toInt64(configMap[key])
+	if !ok {
 		return defValue
 	}
-	val, isOk := value.(int64)
-	if isOk {
-		return val
+	return n
+}
+
+// toInt64 兼容 yaml.v2 常见数字类型（int / int64 / float64 / string）
+func toInt64(value interface{}) (int64, bool) {
+	if value == nil {
+		return 0, false
 	}
-	return defValue
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int8:
+		return int64(v), true
+	case int16:
+		return int64(v), true
+	case int32:
+		return int64(v), true
+	case int64:
+		return v, true
+	case uint:
+		return int64(v), true
+	case uint8:
+		return int64(v), true
+	case uint16:
+		return int64(v), true
+	case uint32:
+		return int64(v), true
+	case uint64:
+		return int64(v), true
+	case float32:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
+	}
 }
